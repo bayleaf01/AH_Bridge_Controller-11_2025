@@ -16,38 +16,71 @@ import time
 from threading import Thread, Event
 import re
 import tkinter.messagebox as msg_box
+import random
 
 
 class ControllerUI:
-    def __init__(self, fig):
+    def __init__(self, plt, data_event, sf_event, rec_event, res_event, end_event):
+        self._plt = plt
+        style.use("seaborn-v0_8-whitegrid")
+        fig = plt.figure()
         self._fig = fig
         self._ax = fig.subplots()
         fig.subplots_adjust(bottom=0.4)
 
-        self._fn = ""
-        self._inst = ""
-        self._rec_t = 0
-        self._dis_t = 1000
+        self._dr = None
 
-        self._animating = False
+        self._fn = "temp.csv"
+        self._inst = ""
+        self._rec_t = 1
+        self._dis_t = 1
+
+        self._lst_dis_t = time.time()
+
+        self._data_event = data_event
+        self._sf_event = sf_event
+        self._rec_event = rec_event
+        self._res_event = res_event
+        self._end_event = end_event
+
+        self._animating = False #Is matplot currently animating
+        self._is_popup = False #Boolean to stop user producing over one popup.
 
         self.setup_textboxes()
-
         self.setup_buttons()
 
-        self._ani = animation.FuncAnimation(fig, self.animate, interval=1000)
+        self._ani = animation.FuncAnimation(fig, self.animate)
+        self._ani.event_source.stop()
+
+    def start(self):
+        self._plt.show()
+        self._end_event.set()
+
+    def animate(self, i):
+        time_passed = time.time() - self._lst_dis_t
+
+        if time_passed < self._dis_t:
+            return
+
+        if self._data_event.is_set() and self._animating:
+            x, y = self._dr.get_last_dp()
+            self._ax.scatter(x, y)
+
+        self._lst_dis_t = time.time()
+
 
     def setup_textboxes(self):
         #4 lines below denote the space where each textbox lives
         ax_fn = self._fig.add_axes([0.13, 0.27, 0.3, 0.05])
         ax_inst = self._fig.add_axes([0.63, 0.27, 0.3, 0.05])
         ax_rec_t = self._fig.add_axes([0.13, 0.17, 0.3, 0.05])
+        #ax_rec_t = self._fig.add_axes([0.4, 0.17, 0.3, 0.05])
         ax_dis_t = self._fig.add_axes([0.63, 0.17, 0.3, 0.05])
 
-        self._fn_tb = TextBox(ax_fn, "Filename", textalignment="center") #textbox containing filename for data 
+        self._fn_tb = TextBox(ax_fn, "Filename", textalignment="center", initial=self._fn) #textbox containing filename for data 
         self._inst_tb = TextBox(ax_inst, "Instrument Address", textalignment="center") #textbox containing instrument port address
-        self._rec_t_tb = TextBox(ax_rec_t, "Record Interval [ms]", textalignment="center") #textbox containing time interval between samples 
-        self._dis_t_tb = TextBox(ax_dis_t, "Display Interval [ms]", textalignment="center") #textbox containing display refresh time
+        self._rec_t_tb = TextBox(ax_rec_t, "Record Interval [s]", textalignment="center", initial=self._rec_t) #textbox containing time interval between samples 
+        self._dis_t_tb = TextBox(ax_dis_t, "Display Interval [s]", textalignment="center", initial=self._dis_t) #textbox containing display refresh time
 
         self._fn_tb.on_submit(self.change_fn) #Trigger functions when textboxes are filled.
         self._inst_tb.on_submit(self.change_inst)
@@ -80,70 +113,181 @@ class ControllerUI:
     def change_rec_t(self, expression):
         t = 0
         try:
-            t = int(expression)
+            t = float(expression)
         except:
-            print("USER did not enter integer for rec_t.")
+            print("USER did not enter number for rec_t.")
             t = self._rec_t
             self._rec_t_tb.set_val(t) #I hope this won't call some nightmarish infinite recursion.
         self._rec_t = t
 
+        self._rec_event.set()
+
     def change_dis_t(self, expression):
         t = 0
         try:
-            t = int(expression)
+            t = float(expression)
         except:
-            print("USER did not enter integer for dis_t.")
+            print("USER did not enter a number for dis_t.")
             t = self._dis_t
             self._dis_t_tb.set_val(t)
+
+        print(f"Display time {t}s")
         self._dis_t = t
         
 
     def save(self, event):
+        if self._sf_event.is_set():
+            return #Stops it doing anything if it is already waiting to do something.
+
         if self._animating:
             self._ani.event_source.stop()
 
         if re.fullmatch(r"\w+\.csv", self._fn) is None:
-            self.popup("FILENAME ERROR", f"{self._fn} is not a .csv file!")
+            if self._is_popup:
+                return
+            self._is_popup = True
+            self.popup("FILENAME ERROR", f"\"{self._fn}\" is not a .csv file!")
+            self._is_popup = False
         else:
-            pass
+            self._sf_event.set()
 
         if self._animating:
             self._ani.event_source.start()
         
     def popup(self, title, msg):
-        popup = msg_box.showerror(title, msg)
+        msg_box.showerror(title, msg)
 
     def reset(self, event):
-        pass
+        if self._res_event.is_set():
+            return #Stops it doing anything if it is already waiting to do something.
 
     def record(self, event):
+        if self._rec_event.is_set(): 
+            return #Stops it doing anything if it is already waiting to do something.
+        
         self._ani.event_source.start()
         self._animating = True
+        self._rec_event.set()
 
     def pause(self, event):
+        if self._rec_event.is_set():
+            return #Stops it doing anything if it is already waiting to do something.
+
         self._ani.event_source.stop()
         self._animating = False
-    
-    def animate(self, i):
-        plt.draw()
+        self._rec_event.set()
 
-class DataRecorder:
-    def __init__(self):
-        self._fn = ""
+    def get_fn(self):
+        return self._fn
+    
+    def get_rec(self):
+        return self._animating
+    
+    def get_rec_t(self):
+        return self._rec_t
+    
+    def get_inst(self):
+        return self._inst
+    
+    def set_dr(self, dr): #set data recorder
+        self._dr = dr
+
+class DataRecorder(Thread):
+    def __init__(self, data_event, sf_event, rec_event, res_event, end_event):
+        super().__init__()
         self._inst = ""
-        self._rec_t = 0 
+        self._rec_t = 1 
+
+        self._UI = None
+
+        self._data_event = data_event
+        self._sf_event = sf_event
+        self._rec_event = rec_event
+        self._res_event = res_event
+        self._end_event = end_event
 
         self._rec = False
 
-    def update(self):
-        pass
 
+    def run(self):
+        super().run()
+        while True:
+            time.sleep(self._rec_t) #I think one thread can block the other if there is no sleeping.
+
+            if self._end_event.is_set():
+                print("In case I don't see ya, good afternoon, good evening, and good night.")
+                return
+
+            if self._sf_event.is_set():
+                self.save()
+                self._sf_event.clear()
+
+            if self._rec_event.is_set():
+                self.record()
+                self._rec_event.clear()
+
+            if self._res_event.is_set():
+                self.reset()
+                self._rec_event.clear()
+
+            if self._rec == False:
+                continue
+
+            self._data_event.set()
+            
+
+    
+    def save(self):
+        fn = self._UI.get_fn()
+        print(f"Saving to {fn}...")
+
+    def reset(self):
+        pass
+    
     def record(self):
-        pass
+        self._rec = self._UI.get_rec()
+        self._rec_t = self._UI.get_rec_t()
+        self._inst = self._UI.get_inst()
 
+        print(f"Recording is {self._rec} with interval {self._rec_t}s from {self._inst}")
+
+
+    def set_ui(self, UI): #set ui
+        self._UI = UI
+
+    def get_last_dp(self): #gets last data point in sequence
+        return random.randint(0, 9), random.randint(0, 9)
+
+class FileSave:
+    def __init__(self, fn, save):
+        self.fn = fn
+        self.save = save
+
+class Instrument:
+    def __init__(self, name, t, record):
+        self.name = name
+        self.t = t
+        self.record = record
+
+#I need to add events to communicate data between the two threads.
+#File: Containing filename and command to save.
+#Instruement: Instrument name, command to record, and recording interval.
+#Reset: Command to reset.
 
 if __name__ == "__main__":
-    style.use("seaborn-v0_8-whitegrid")
-    fig = plt.figure()
-    ui = ControllerUI(fig)
-    plt.show()
+    sf_event = Event()
+    rec_event = Event()
+    res_event = Event()
+    end_event = Event()
+    data_event = Event()
+
+    ui = ControllerUI(plt, data_event, sf_event, rec_event, res_event, end_event)
+    dr = DataRecorder(data_event, sf_event, rec_event, res_event, end_event)
+
+    ui.set_dr(dr)
+    dr.set_ui(ui)
+
+    dr.start()
+    ui.start() #Figure should be in main thread for whatever reason.
+
+    dr.join()
