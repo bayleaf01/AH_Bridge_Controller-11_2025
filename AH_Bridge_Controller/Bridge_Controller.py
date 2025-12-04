@@ -30,7 +30,7 @@ class ControllerUI:
 
         self._dr = None
 
-        self._fn = "temp.csv"
+        self._fn = "data.csv"
         self._inst = ""
         self._rec_t = 1
         self._dis_t = 1
@@ -63,8 +63,8 @@ class ControllerUI:
             return
 
         if self._data_event.is_set() and self._animating:
-            x, y = self._dr.get_last_dp()
-            self._ax.scatter(x, y)
+            data = self._dr.get_last_dp()
+            self._ax.scatter(data[0], data[1], color="r")
 
         self._lst_dis_t = time.time()
 
@@ -138,9 +138,8 @@ class ControllerUI:
     def save(self, event):
         if self._sf_event.is_set():
             return #Stops it doing anything if it is already waiting to do something.
-
-        if self._animating:
-            self._ani.event_source.stop()
+        
+        self.pause()
 
         if re.fullmatch(r"\w+\.csv", self._fn) is None:
             if self._is_popup:
@@ -150,26 +149,28 @@ class ControllerUI:
             self._is_popup = False
         else:
             self._sf_event.set()
-
-        if self._animating:
-            self._ani.event_source.start()
-        
+          
     def popup(self, title, msg):
         msg_box.showerror(title, msg)
 
-    def reset(self, event):
+    def reset(self, event=None):
         if self._res_event.is_set():
             return #Stops it doing anything if it is already waiting to do something.
+        self.pause()
+        self._ax.clear()
+        self._res_event.set()
 
-    def record(self, event):
-        if self._rec_event.is_set(): 
-            return #Stops it doing anything if it is already waiting to do something.
-        
+    def record(self, event=None):
+        #If you type in the record time first and don't click off, clicking on the button counts as two events: submitting the textbox and hitting the button, 
+        #so the button function is blocked by the code below.
+        #if self._rec_event.is_set(): 
+        #    return #Stops it doing anything if it is already waiting to do something.
+        #I have commented the code above because I don't think it is needed.
         self._ani.event_source.start()
         self._animating = True
         self._rec_event.set()
 
-    def pause(self, event):
+    def pause(self, event=None):
         if self._rec_event.is_set():
             return #Stops it doing anything if it is already waiting to do something.
 
@@ -206,6 +207,14 @@ class DataRecorder(Thread):
         self._res_event = res_event
         self._end_event = end_event
 
+        self._strt_t = time.time()
+        self._data_shape = (100, 2) #number of data points before auto save on left. Two for the time and cap on right.
+        self._autosv_fn = "temp_data.txt"
+        self.reset_file()
+
+        self._dp_id = 1
+        self._data = np.zeros(shape=self._data_shape) 
+
         self._rec = False
 
 
@@ -213,6 +222,8 @@ class DataRecorder(Thread):
         super().run()
         while True:
             time.sleep(self._rec_t) #I think one thread can block the other if there is no sleeping.
+            #The sleep is a problem if the time is set too high. It takes time to reset it.
+            #For now I will focus on getting it working. If I have time, I should try to sort this out.
 
             if self._end_event.is_set():
                 print("In case I don't see ya, good afternoon, good evening, and good night.")
@@ -228,21 +239,57 @@ class DataRecorder(Thread):
 
             if self._res_event.is_set():
                 self.reset()
-                self._rec_event.clear()
+                self._res_event.clear()
 
             if self._rec == False:
                 continue
 
-            self._data_event.set()
+            self.measure()
+            self._dp_id += 1
             
+            if self._dp_id >= self._data_shape[0]:
+                self.autosave()
 
+    def measure(self):
+        if not self._data_event.is_set():
+            self._strt_t = time.time() #Start the timer when you first start recording for the first time.
+        self._data[self._dp_id] = [time.time()-self._strt_t, random.random()]
+        #print(self._data[self._dp_id])
+        self._data_event.set() #Tells the GUI that there are data points to be measured.
     
     def save(self):
         fn = self._UI.get_fn()
         print(f"Saving to {fn}...")
+        stored_data = np.genfromtxt(self._autosv_fn)
+        complete_data = np.concatenate((stored_data, self._data[1:self._dp_id]), axis=0) #Combines data from the memory with that in temporary storage.
+        #print(complete_data[0], complete_data[-1])
+        df = pd.DataFrame(data=complete_data, columns=["time [s]", "Cap [pF]"])
+        df.to_csv(fn)
+        print(f"Done!")
+
+    def autosave(self):
+        #if not self._data_event.is_set():
+        #    return
+        #I will hard code the autosave. It would be better practice to control it through a user input or JSON file.
+        with open(self._autosv_fn, "ab") as f:
+            np.savetxt(f, self._data[1:]) #appends (not write) data to text file.
+            #Does not include the first data point because that was submitted with the last set.
+        new_data = np.zeros(shape=self._data_shape)
+        new_data[0] = self._data[-1]
+        self._data = new_data #clear data to free up space in the memory.
+        
+        self._dp_id = 1 #The zeroth data point is the last of the previous dataset.
 
     def reset(self):
-        pass
+        self._data_event.clear()
+        self._data = np.zeros(shape=self._data_shape) #clear data
+        self._dp_id = 0
+        self.reset_file()
+        print("Reset")
+
+    def reset_file(self):
+        open(self._autosv_fn, "w").close()
+
     
     def record(self):
         self._rec = self._UI.get_rec()
@@ -256,23 +303,21 @@ class DataRecorder(Thread):
         self._UI = UI
 
     def get_last_dp(self): #gets last data point in sequence
-        return random.randint(0, 9), random.randint(0, 9)
+        return self._data[self._dp_id-1] #-1 because the current data point will be undefined. 
+        #Data can't be taken until at least one data point exists so i=0 is not worrying.
 
-class FileSave:
-    def __init__(self, fn, save):
-        self.fn = fn
-        self.save = save
+#class FileSave:
+#    def __init__(self, fn, save):
+#        self.fn = fn
+#        self.save = save
 
-class Instrument:
-    def __init__(self, name, t, record):
-        self.name = name
-        self.t = t
-        self.record = record
+# class Instrument:
+#     def __init__(self, name, t, record):
+#         self.name = name
+#         self.t = t
+#         self.record = record
 
-#I need to add events to communicate data between the two threads.
-#File: Containing filename and command to save.
-#Instruement: Instrument name, command to record, and recording interval.
-#Reset: Command to reset.
+#I need to add temporary and perminant data saving.
 
 if __name__ == "__main__":
     sf_event = Event()
