@@ -43,6 +43,8 @@ class ControllerUI:
         self._res_event = res_event
         self._end_event = end_event
 
+        self._data = []
+
         self._animating = False #Is matplot currently animating
         self._is_popup = False #Boolean to stop user producing over one popup.
 
@@ -63,8 +65,14 @@ class ControllerUI:
             return
 
         if self._data_event.is_set() and self._animating:
+            self._ax.clear()
             data = self._dr.get_last_dp()
-            self._ax.scatter(data[0], data[1], color="r")
+            if len(self._data) == 0:
+                self._data = [[], []]
+            else:
+                self._data[0].append(data[0])
+                self._data[1].append(data[1])
+            self._ax.plot(self._data[0], self._data[1], color="r")
 
         self._lst_dis_t = time.time()
 
@@ -157,6 +165,7 @@ class ControllerUI:
         if self._res_event.is_set():
             return #Stops it doing anything if it is already waiting to do something.
         self.pause()
+        self._data = []
         self._ax.clear()
         self._res_event.set()
 
