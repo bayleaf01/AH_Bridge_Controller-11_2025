@@ -205,7 +205,12 @@ class ControllerUI:
 class DataRecorder(Thread):
     def __init__(self, data_event, sf_event, rec_event, res_event, end_event):
         super().__init__()
+
         self._inst = ""
+        self._rm = pyvisa.ResourceManager()
+        self._bridge = None
+        print(self._rm.list_resources())
+
         self._rec_t = 1 
 
         self._UI = None
@@ -218,6 +223,7 @@ class DataRecorder(Thread):
 
         self._strt_t = time.time()
         self._data_shape = (100, 2) #number of data points before auto save on left. Two for the time and cap on right.
+        #I need to rethink the data shape because it may include more than two variables.
         self._autosv_fn = "temp_data.txt"
         self.reset_file()
 
@@ -262,9 +268,37 @@ class DataRecorder(Thread):
     def measure(self):
         if not self._data_event.is_set():
             self._strt_t = time.time() #Start the timer when you first start recording for the first time.
+
+        
+        
         self._data[self._dp_id] = [time.time()-self._strt_t, random.random()]
         #print(self._data[self._dp_id])
         self._data_event.set() #Tells the GUI that there are data points to be measured.
+
+    def query_bridge(self):
+        data = {} #A dictionary containing the data. The key is the variable name and the value contains the number and unit.
+
+        if self._bridge is None:
+            return 0, 0, False #Cap., Loss, Success (is it a genuine measurement or undefined?)
+        
+        query = self._bridge.query("SINGLE") #I wonder how this function deals with the measuremnet time.
+ 
+        useful_data_search = r"([a-zA-Z])\=\s(\d+\.?\d*)\s*([a-zA-Z][a-zA-Z])" #I wonder if there is a better variable name.
+
+        if re.search(useful_data_search, query) is None:
+            return data, False
+        
+        #re code for bridge return r"([a-zA-Z])\=\s(\d+\.?\d*)\s*([a-zA-Z][a-zA-Z])" 
+        #...([a-zA-Z])...: "C" (variable)
+        #...(\d+\.?\d*)...: "34848.55373" (value)
+        #...([a-zA-Z][a-zA-Z])...: "PF" (unit)
+
+        query_extract = re.findall(useful_data_search, query)
+
+        for qe in query_extract:
+            data[qe[0]] = (float(qe[1]), qe[2])
+
+        return data, True 
     
     def save(self):
         fn = self._UI.get_fn()
@@ -297,13 +331,18 @@ class DataRecorder(Thread):
         print("Reset")
 
     def reset_file(self):
-        open(self._autosv_fn, "w").close()
+        open(self._autosv_fn, "w").close() #I found this code on StackOverflow. I gather that it opens the file, attempts to write which deletes what is there, and closes.
 
     
     def record(self):
         self._rec = self._UI.get_rec()
         self._rec_t = self._UI.get_rec_t()
         self._inst = self._UI.get_inst()
+
+        try:
+            self._bridge = self._rm.open_resource(self._inst)
+        except:
+            self._bridge = None
 
         print(f"Recording is {self._rec} with interval {self._rec_t}s from {self._inst}")
 
@@ -327,6 +366,8 @@ class DataRecorder(Thread):
 #         self.record = record
 
 #I need to add temporary and perminant data saving.
+
+#Today, I need to add the ability to command the bridge.
 
 if __name__ == "__main__":
     sf_event = Event()
