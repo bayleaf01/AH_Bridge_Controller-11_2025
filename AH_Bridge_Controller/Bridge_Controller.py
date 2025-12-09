@@ -222,8 +222,9 @@ class DataRecorder(Thread):
         self._end_event = end_event
 
         self._strt_t = time.time()
-        self._data_shape = (100, 2) #number of data points before auto save on left. Two for the time and cap on right.
-        #I need to rethink the data shape because it may include more than two variables.
+        self._variables = ["t[s]", "C[PF]", "L[NS]", "F[HZ]", "V[V]"]
+        self._data_shape = (100, 5) #number of data points before auto save on left. Two for the time and cap on right.
+        #There should be 4 variables coming from the bridge F (freq.), C (cap.), L (loss), and V (vol.).
         self._autosv_fn = "temp_data.txt"
         self.reset_file()
 
@@ -269,18 +270,42 @@ class DataRecorder(Thread):
         if not self._data_event.is_set():
             self._strt_t = time.time() #Start the timer when you first start recording for the first time.
 
-        
-        
-        self._data[self._dp_id] = [time.time()-self._strt_t, random.random()]
+        qe, success = self.query_bridge(mock=True)
+        #qe, success = self.query_bridge()
+
+        if not success:
+            return
+
+        data = [0]*5
+
+        i = 0
+        for i in range(len(self._variables)):
+            data[i] = qe[self._variables[i]] 
+    
+        self._data[self._dp_id] = data
         #print(self._data[self._dp_id])
         self._data_event.set() #Tells the GUI that there are data points to be measured.
 
-    def query_bridge(self):
+    def query_bridge(self, mock=False):
         data = {} #A dictionary containing the data. The key is the variable name and the value contains the number and unit.
 
+        if mock:
+            t = time.time()-self._strt_t
+            for vari in self._variables:
+                value = 0
+                if vari == "t[s]":
+                    value = t
+                elif vari == "C[PF]":
+                    value = random.random()
+                data[vari] = value
+
+            return data, True
+
         if self._bridge is None:
-            return 0, 0, False #Cap., Loss, Success (is it a genuine measurement or undefined?)
+            return data, False #Cap., Loss, Success (is it a genuine measurement or undefined?)
         
+        t = time.time()-self._strt_t
+
         query = self._bridge.query("SINGLE") #I wonder how this function deals with the measuremnet time.
  
         useful_data_search = r"([a-zA-Z])\=\s(\d+\.?\d*)\s*([a-zA-Z][a-zA-Z])" #I wonder if there is a better variable name.
@@ -296,7 +321,9 @@ class DataRecorder(Thread):
         query_extract = re.findall(useful_data_search, query)
 
         for qe in query_extract:
-            data[qe[0]] = (float(qe[1]), qe[2])
+            data[f"{qe[0]}[{qe[2]}]"] = float(qe[1])
+
+        data["t[s]"] = t
 
         return data, True 
     
@@ -306,7 +333,7 @@ class DataRecorder(Thread):
         stored_data = np.genfromtxt(self._autosv_fn)
         complete_data = np.concatenate((stored_data, self._data[1:self._dp_id]), axis=0) #Combines data from the memory with that in temporary storage.
         #print(complete_data[0], complete_data[-1])
-        df = pd.DataFrame(data=complete_data, columns=["time [s]", "Cap [pF]"])
+        df = pd.DataFrame(data=complete_data, columns=self._variables)
         df.to_csv(fn)
         print(f"Done!")
 
@@ -351,7 +378,7 @@ class DataRecorder(Thread):
         self._UI = UI
 
     def get_last_dp(self): #gets last data point in sequence
-        return self._data[self._dp_id-1] #-1 because the current data point will be undefined. 
+        return self._data[self._dp_id-1, 0:2] #-1 because the current data point will be undefined. 
         #Data can't be taken until at least one data point exists so i=0 is not worrying.
 
 #class FileSave:
@@ -365,9 +392,8 @@ class DataRecorder(Thread):
 #         self.t = t
 #         self.record = record
 
-#I need to add temporary and perminant data saving.
 
-#Today, I need to add the ability to command the bridge.
+#The code got very janky towards the end, but I think it should work now. It is time to test it on the bridge.
 
 if __name__ == "__main__":
     sf_event = Event()
